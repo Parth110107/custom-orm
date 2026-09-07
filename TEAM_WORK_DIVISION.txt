@@ -1,0 +1,182 @@
+==============================================================
+  custom-orm — Future Work Division (v2 + v3)
+  Team: Arpit, Swayam, Parth, Sahil
+==============================================================
+
+This file divides all the future development work across the
+4 team members.  It maps directly to the items in ROADMAP.md.
+Each person owns a specific area end-to-end: design, code,
+tests, and documentation for their section.
+
+--------------------------------------------------------------
+  ARPIT — Query Enhancements & Field Expansion
+--------------------------------------------------------------
+
+Why this area: Arpit built the original QuerySet and fields,
+so he has the deepest context for extending them cleanly.
+
+Tasks:
+  [ ] annotate() and aggregate() — COUNT, SUM, AVG, MAX, MIN
+        e.g. Author.objects.annotate(post_count=Count("post"))
+  [ ] values() and values_list() — return dicts/tuples instead
+        of full model instances (useful for large datasets)
+  [ ] distinct() — SELECT DISTINCT support
+  [ ] Q objects — OR / complex conditions
+        e.g. filter(Q(name="Alice") | Q(name="Bob"))
+  [ ] F expressions — column references in updates
+        e.g. Post.objects.update(views=F("views") + 1)
+  [ ] New field types:
+        - DecimalField(max_digits, decimal_places)
+        - JSONField (Postgres JSONB / MySQL JSON)
+        - DateField, TimeField
+        - UUIDField
+  [ ] Field-level validators (custom callables on Field)
+  [ ] Unit tests for every new feature above
+  [ ] Update README with examples for each new feature
+
+Estimated scope: ~3-4 months
+
+--------------------------------------------------------------
+  SWAYAM — Relationship System (Many-to-Many + Reverse FKs)
+--------------------------------------------------------------
+
+Why this area: Building on top of the existing ForeignKeyField
+and model metaclass requires understanding both, making it a
+natural continuation for someone focused on model design.
+
+Tasks:
+  [ ] ManyToManyField — through-model support
+        e.g. Post.tags.add(tag), Post.tags.all()
+        Through model: PostTag(post, tag)
+  [ ] Reverse FK managers — author.post_set.filter(...)
+        Install reverse accessors in ModelBase when FK is defined
+  [ ] select_related(*fields) — JOIN-based eager loading
+        Eliminates N+1 for ForeignKey access
+  [ ] prefetch_related(*fields) — separate query prefetch
+        For reverse relations and M2M
+  [ ] Integration tests for all relationship types
+        (both Postgres and MySQL)
+  [ ] Update README with relationship usage examples
+
+Estimated scope: ~4-5 months
+
+--------------------------------------------------------------
+  PARTH — Migration System (History, Rollback, Data Migrations)
+--------------------------------------------------------------
+
+Why this area: Parth owns the repo (github.com/Parth110107)
+and is well positioned to own the operational/DBA-facing part
+of the ORM — the part that changes production databases safely.
+
+Tasks:
+  [ ] Migration history table — orm_migrations table in DB
+        Tracks which .sql files have been applied
+        makemigrations / migrate skip already-applied files
+  [ ] migrate --rollback — undo the last applied migration
+        Requires "down" migration alongside each "up" migration
+  [ ] Column rename support — ALTER TABLE RENAME COLUMN
+        With explicit --confirm flag (destructive)
+  [ ] Column drop support — ALTER TABLE DROP COLUMN
+        With explicit --confirm flag (destructive)
+  [ ] Data migrations — Python callable alongside SQL
+        e.g. def migrate(db): db.execute("UPDATE ...")
+  [ ] migrate --dry-run — show SQL without applying
+  [ ] migrate --status — list applied vs pending migrations
+  [ ] Update CLI help text and README migration section
+
+Estimated scope: ~3-4 months
+
+--------------------------------------------------------------
+  SAHIL — Performance & Async Support
+--------------------------------------------------------------
+
+Why this area: Async and connection pool improvements are
+infrastructure-level changes that should be done by one person
+to keep the internal architecture consistent.
+
+Tasks:
+  [ ] Advanced connection pool:
+        - min_conn warm connections on startup
+        - Connection health-check / reconnect on stale conn
+        - Acquire timeout (raise after N seconds, not instantly)
+        - Pool statistics (active, idle, total)
+  [ ] mysqlclient as optional C-extension alternative to PyMySQL
+        Add as optional extra: pip install custom-orm[mysql-fast]
+  [ ] Query result caching:
+        - Pluggable cache backend (dict / Redis)
+        - Cache invalidation on write (UPDATE/DELETE/INSERT)
+        - Per-QuerySet cache TTL
+  [ ] AsyncDatabase — full async/await API (v3 milestone)
+        Uses psycopg[async] + aiomysql
+        AsyncQuerySet with async for row in qs: ...
+        async with db.transaction(): ...
+  [ ] Benchmark suite — compare sync vs async, pool sizes
+  [ ] Update README with async usage guide
+
+Estimated scope: ~5-6 months (async is a large undertaking)
+
+--------------------------------------------------------------
+  SHARED / ALL FOUR
+--------------------------------------------------------------
+
+These items require coordination across the team:
+
+  [ ] CI/CD — GitHub Actions workflow
+        - Run unit tests on every PR
+        - Run integration tests (Docker) on merge to main
+        - mypy strict check
+        - Publish to PyPI on tagged release
+  [ ] Code review — each person reviews 1 other person's PRs
+        Suggested pairing: Arpit↔Swayam, Parth↔Sahil
+  [ ] v2 release planning meeting — once all v2 items above
+        are 80% done, hold a meeting to align on API surface
+        before cutting the v2.0.0 release
+  [ ] CHANGELOG.md — maintain a changelog for each release
+
+--------------------------------------------------------------
+  TIMELINE SUGGESTION
+--------------------------------------------------------------
+
+Month 1-2 : Each person sets up their local dev environment,
+            reads the v1 codebase in their area, writes a
+            design doc for their first feature.
+
+Month 3-5 : Core development.  Weekly sync meeting (30 min)
+            to unblock cross-area dependencies.
+
+Month 6   : Integration + testing sprint.  All 4 areas
+            must work together (e.g. async + M2M + migrations).
+
+Month 7   : Docs, benchmarks, and v2.0.0 release.
+
+--------------------------------------------------------------
+  HOW TO WORK ON THIS REPO
+--------------------------------------------------------------
+
+1. Clone:
+   git clone https://github.com/Parth110107/custom-orm.git
+
+2. Install dev dependencies:
+   pip install -e ".[dev]"
+
+3. Run unit tests before any PR:
+   pytest tests/unit/ -v
+
+4. Run integration tests (needs Docker):
+   docker compose up -d
+   pytest tests/ --integration -v
+
+5. Type-check your code:
+   mypy orm/
+
+6. Branch naming convention:
+   feature/<your-name>/<short-description>
+   e.g.  feature/arpit/json-field
+         feature/swayam/many-to-many
+         feature/parth/migration-history
+         feature/sahil/async-pool
+
+==============================================================
+  Last updated: September 2026
+  v1 completed by: Arpit (lead), Swayam, Parth, Sahil
+==============================================================
