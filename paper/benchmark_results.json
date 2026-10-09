@@ -1,0 +1,49 @@
+{
+  "compilation": {
+    "simple_filter_us": 41.02,
+    "complex_q_filter_us": 204.8,
+    "select_related_us": 56.15
+  },
+  "hydration": {
+    "1000": {
+      "model_throughput_rows_sec": 167822.0,
+      "values_throughput_rows_sec": 1016777.0,
+      "speedup_factor": 6.06
+    },
+    "5000": {
+      "model_throughput_rows_sec": 192981.0,
+      "values_throughput_rows_sec": 1057552.0,
+      "speedup_factor": 5.48
+    },
+    "10000": {
+      "model_throughput_rows_sec": 197689.0,
+      "values_throughput_rows_sec": 1181907.0,
+      "speedup_factor": 5.98
+    }
+  },
+  "memory": {
+    "1000": {
+      "model_memory_kb": 334.9,
+      "values_memory_kb": 189.9,
+      "kb_per_entity_model": 0.335
+    },
+    "5000": {
+      "model_memory_kb": 1710.2,
+      "values_memory_kb": 972.1,
+      "kb_per_entity_model": 0.342
+    },
+    "10000": {
+      "model_memory_kb": 3432.6,
+      "values_memory_kb": 1952.5,
+      "kb_per_entity_model": 0.343
+    }
+  },
+  "nplusone": {
+    "num_entities": 500,
+    "eager_queries": 1,
+    "eager_time_ms": 5.79,
+    "lazy_queries": 501,
+    "lazy_time_ms": 31.82,
+    "latency_reduction_percent": 81.8
+  }
+}

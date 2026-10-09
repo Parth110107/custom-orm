@@ -136,25 +136,50 @@ def cmd_makemigrations(args: argparse.Namespace) -> int:
 
 def cmd_migrate(args: argparse.Namespace) -> int:
     """
-    Apply all pending migration files to the database.
+    Apply all pending migration files to the database with state tracking.
 
     Returns exit code (0 = success, 1 = error).
     """
+    import os
     from orm.db import Database
     from orm.migrations.writer import MigrationApplier
 
     db = Database(args.url, max_conn=1)
     applier = MigrationApplier(db, migration_dir=args.dir)
-    pending = applier.pending_files()
 
-    if not pending:
-        print(f"No migration files found in {args.dir!r}.")
+    if getattr(args, "status", False):
+        applied = applier.history.get_applied() if applier.history else []
+        pending = applier.pending_files()
+        print(f"Applied migrations ({len(applied)}):")
+        for f in applied:
+            print(f"  [x] {f}")
+        print(f"Pending migrations ({len(pending)}):")
+        for f in pending:
+            print(f"  [ ] {os.path.basename(f)}")
+        db.close_all()
         return 0
 
-    print(f"Applying {len(pending)} migration file(s)...")
+    if getattr(args, "rollback", False):
+        rolled = applier.rollback_last()
+        if rolled:
+            print(f"Rolled back record for migration: {rolled}")
+        else:
+            print("No migrations available to roll back.")
+        db.close_all()
+        return 0
+
+    pending = applier.pending_files()
+    if not pending:
+        print(f"No pending migration files found in {args.dir!r}.")
+        db.close_all()
+        return 0
+
+    dry = getattr(args, "dry_run", False)
+    prefix = "[DRY RUN] " if dry else ""
+    print(f"{prefix}Applying {len(pending)} migration file(s)...")
     try:
-        total = applier.apply_all()
-        print(f"Done. {total} statement(s) executed.")
+        total = applier.apply_all(dry_run=dry)
+        print(f"{prefix}Done. {total} statement(s) processed.")
     except Exception as exc:
         print(f"Migration failed: {exc}", file=sys.stderr)
         db.close_all()
@@ -205,6 +230,21 @@ def main(argv: list[str] | None = None) -> None:
         "--dir",
         default="migrations",
         help="Directory containing migration files (default: ./migrations)",
+    )
+    mg.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Simulate migration without executing statements or recording history",
+    )
+    mg.add_argument(
+        "--status",
+        action="store_true",
+        help="List applied and pending migrations",
+    )
+    mg.add_argument(
+        "--rollback",
+        action="store_true",
+        help="Revert history record for the most recently applied migration",
     )
 
     args = parser.parse_args(argv)

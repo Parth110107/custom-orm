@@ -144,10 +144,10 @@ class MigrationWriter:
 
 class MigrationApplier:
     """
-    Applies pending .sql migration files to the database.
+    Applies pending .sql migration files to the database with state tracking.
 
-    Files are sorted lexicographically (timestamp prefix ensures correct
-    order).  No history table is maintained in v1.
+    Uses `orm_migrations` history table to ensure migrations are executed
+    exactly once in order.
 
     Parameters
     ----------
@@ -155,47 +155,76 @@ class MigrationApplier:
         Target database.
     migration_dir:
         Directory containing .sql migration files.
+    track_history:
+        If True (default), records applied migrations in `orm_migrations`.
     """
 
-    def __init__(self, db: Database, migration_dir: str = "migrations") -> None:
+    def __init__(
+        self,
+        db: Database,
+        migration_dir: str = "migrations",
+        track_history: bool = True,
+    ) -> None:
         self._db = db
         self._migration_dir = migration_dir
+        self._track_history = track_history
+        from orm.migrations.history import MigrationHistory
+        self.history = MigrationHistory(db) if track_history else None
 
     def pending_files(self) -> list[str]:
-        """Return sorted list of .sql files in migration_dir."""
+        """Return sorted list of pending .sql files."""
         if not os.path.isdir(self._migration_dir):
             return []
-        files = sorted(
-            f for f in os.listdir(self._migration_dir) if f.endswith(".sql")
-        )
-        return [os.path.join(self._migration_dir, f) for f in files]
 
-    def apply_all(self) -> int:
+        if self.history:
+            filenames = self.history.get_pending(self._migration_dir)
+        else:
+            filenames = sorted(
+                f for f in os.listdir(self._migration_dir) if f.endswith(".sql")
+            )
+        return [os.path.join(self._migration_dir, f) for f in filenames]
+
+    def apply_all(self, dry_run: bool = False) -> int:
         """
         Apply all pending migration files in order.
 
-        Returns the total number of SQL statements executed.
+        Parameters
+        ----------
+        dry_run:
+            If True, only simulates without executing DDL or writing to history.
 
-        Note: In v1, ALL .sql files are applied on each ``migrate`` call.
-        Add a ``-- applied`` sentinel or track manually to avoid re-applying.
-        A proper history table is planned for v2.
+        Returns the total number of SQL statements executed.
         """
         total = 0
         for filepath in self.pending_files():
+            basename = os.path.basename(filepath)
             with open(filepath, encoding="utf-8") as f:
                 content = f.read()
 
-            # Split on semicolons to get individual statements
             raw_statements = content.split(";")
             for raw in raw_statements:
-                # Strip comments and whitespace
                 lines = [
                     line for line in raw.splitlines()
                     if not line.strip().startswith("--")
                 ]
                 stmt = "\n".join(lines).strip()
                 if stmt:
-                    self._db.execute(stmt, fetch="none")
+                    if not dry_run:
+                        self._db.execute(stmt, fetch="none")
                     total += 1
 
+            if not dry_run and self.history:
+                self.history.record_applied(basename)
+
         return total
+
+    def rollback_last(self) -> str | None:
+        """Revert recording of the most recently applied migration."""
+        if not self.history:
+            return None
+        applied = self.history.get_applied()
+        if not applied:
+            return None
+        last_applied = applied[-1]
+        self.history.record_unapplied(last_applied)
+        return last_applied

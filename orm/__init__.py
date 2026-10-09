@@ -5,7 +5,7 @@ A lightweight, from-scratch ORM for PostgreSQL and MySQL.
 
 Typical usage::
 
-    from orm import Database, Model, CharField, IntegerField, ForeignKeyField
+    from orm import Database, Model, CharField, IntegerField, ForeignKeyField, Q, F
 
     db = Database("postgresql://user:pass@localhost/mydb")
 
@@ -21,9 +21,10 @@ Typical usage::
 
     alice = Author.create(name="Alice")
     post  = Post.create(title="Hello", author=alice)
-    posts = Post.objects.filter(author=alice).order_by("-title").all()
+    posts = Post.objects.select_related("author").filter(Q(title__startswith="H") | Q(title__startswith="W")).all()
 """
 
+from orm.cache import QueryCache
 from orm.db import Database
 from orm.exceptions import (
     ConnectionError,
@@ -34,25 +35,51 @@ from orm.exceptions import (
     MultipleObjectsReturned,
     OrmError,
 )
+from orm.expressions import (
+    Aggregate,
+    Avg,
+    Count,
+    F,
+    Max,
+    Min,
+    Q,
+    Sum,
+)
 from orm.fields import (
     BooleanField,
     CharField,
+    DateField,
     DateTimeField,
+    DecimalField,
     Field,
     ForeignKeyField,
     IntegerField,
+    JSONField,
+    ManyToManyField,
     TextField,
+    TimeField,
+    UUIDField,
 )
 from orm.models import Model
 from orm.queryset import QuerySet
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 __all__ = [
     # Core
     "Database",
     "Model",
     "QuerySet",
+    "QueryCache",
+    # Expressions
+    "Q",
+    "F",
+    "Aggregate",
+    "Count",
+    "Sum",
+    "Avg",
+    "Max",
+    "Min",
     # Fields
     "Field",
     "IntegerField",
@@ -60,7 +87,13 @@ __all__ = [
     "TextField",
     "BooleanField",
     "DateTimeField",
+    "DateField",
+    "TimeField",
+    "DecimalField",
+    "JSONField",
+    "UUIDField",
     "ForeignKeyField",
+    "ManyToManyField",
     # Exceptions
     "OrmError",
     "DoesNotExist",

@@ -34,7 +34,10 @@ a fresh query.  Caching is left for v2 when a proper identity map is added.
 from __future__ import annotations
 
 import datetime
-from typing import TYPE_CHECKING, Any
+import decimal
+import json
+import uuid
+from typing import TYPE_CHECKING, Any, Callable, Sequence
 
 from orm.exceptions import FieldError
 
@@ -83,6 +86,7 @@ class Field:
         default: Any = _MISSING,
         primary_key: bool = False,
         column_name: str | None = None,
+        validators: Sequence[Any] = (),
     ) -> None:
         Field._creation_counter += 1
         # Store the snapshot so the metaclass can sort fields.
@@ -92,6 +96,7 @@ class Field:
         self.default: Any = default
         self.primary_key: bool = primary_key
         self.column_name: str | None = column_name
+        self.validators: list[Any] = list(validators)
 
         # Set by the model metaclass once the field is attached to a model.
         self.attname: str = ""  # Python attribute name on the model class
@@ -181,6 +186,9 @@ class Field:
             raise FieldError(
                 f"Field '{self.attname}' does not allow null values."
             )
+        if value is not None:
+            for validator in self.validators:
+                validator(value)
 
     def __repr__(self) -> str:
         return (
@@ -591,13 +599,20 @@ class ForeignKeyField(Field):
             # works (e.g. ``Post.author.attname``).
             return self  # type: ignore[return-value]
 
+        # If select_related already eager-loaded the object, return the cached instance
+        cached_val = instance.__dict__.get(f"_cached_{self.attname}")
+        if cached_val is not None:
+            return cached_val
+
         raw_id: int | None = instance.__dict__.get(self._id_attr)
         if raw_id is None:
             return None
 
         target_cls = self._resolve_target()
-        # Fire a fresh query every time — no caching in v1.
-        return target_cls.objects.get(id=raw_id)  # type: ignore[return-value]
+        # Fire query and optionally cache
+        res = target_cls.objects.get(id=raw_id)
+        instance.__dict__[f"_cached_{self.attname}"] = res
+        return res  # type: ignore[return-value]
 
     def __set__(self, instance: "Model", value: Any) -> None:
         """
@@ -624,3 +639,286 @@ class ForeignKeyField(Field):
             f"Cannot assign {type(value).__name__!r} to '{self.attname}'. "
             "Expected a model instance or integer."
         )
+
+
+class JSONField(Field):
+    """
+    Stores arbitrary structured data (dict, list, etc.) serialized as JSON.
+    Maps to JSONB on PostgreSQL and JSON on MySQL.
+    """
+
+    def db_type(self, dialect: str) -> str:
+        return "JSONB" if dialect == "postgres" else "JSON"
+
+    def to_db(self, value: Any) -> Any:
+        if value is None:
+            return None
+        if isinstance(value, str):
+            return value
+        return json.dumps(value)
+
+    def from_db(self, value: Any) -> Any:
+        if value is None:
+            return None
+        if isinstance(value, (dict, list)):
+            return value
+        try:
+            return json.loads(value)
+        except (ValueError, TypeError):
+            return value
+
+
+class DecimalField(Field):
+    """
+    Fixed-point decimal field mapping to DECIMAL(max_digits, decimal_places).
+    """
+
+    def __init__(self, max_digits: int = 10, decimal_places: int = 2, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self.max_digits: int = max_digits
+        self.decimal_places: int = decimal_places
+
+    def db_type(self, dialect: str) -> str:
+        return f"DECIMAL({self.max_digits}, {self.decimal_places})"
+
+    def to_db(self, value: Any) -> Any:
+        if value is None:
+            return None
+        return str(decimal.Decimal(str(value)))
+
+    def from_db(self, value: Any) -> Any:
+        if value is None:
+            return None
+        return decimal.Decimal(str(value))
+
+
+class DateField(Field):
+    """
+    Date field mapping to DATE.
+    """
+
+    def db_type(self, dialect: str) -> str:
+        return "DATE"
+
+    def to_db(self, value: Any) -> Any:
+        if value is None:
+            return None
+        if isinstance(value, datetime.date):
+            return value.isoformat()
+        return str(value)
+
+    def from_db(self, value: Any) -> Any:
+        if value is None or isinstance(value, datetime.date):
+            return value
+        if isinstance(value, str):
+            return datetime.date.fromisoformat(value)
+        return value
+
+
+class TimeField(Field):
+    """
+    Time field mapping to TIME.
+    """
+
+    def db_type(self, dialect: str) -> str:
+        return "TIME"
+
+    def to_db(self, value: Any) -> Any:
+        if value is None:
+            return None
+        if isinstance(value, datetime.time):
+            return value.isoformat()
+        return str(value)
+
+    def from_db(self, value: Any) -> Any:
+        if value is None or isinstance(value, datetime.time):
+            return value
+        if isinstance(value, str):
+            return datetime.time.fromisoformat(value)
+        return value
+
+
+class UUIDField(Field):
+    """
+    UUID field mapping to UUID on PostgreSQL and VARCHAR(36) on MySQL.
+    """
+
+    def db_type(self, dialect: str) -> str:
+        return "UUID" if dialect == "postgres" else "VARCHAR(36)"
+
+    def to_db(self, value: Any) -> Any:
+        if value is None:
+            return None
+        return str(value)
+
+    def from_db(self, value: Any) -> Any:
+        if value is None:
+            return None
+        if isinstance(value, uuid.UUID):
+            return value
+        try:
+            return uuid.UUID(str(value))
+        except (ValueError, TypeError):
+            return str(value)
+
+
+class ManyRelatedManager:
+    """
+    Manager for interacting with ManyToMany relationships on a model instance.
+    """
+
+    def __init__(self, instance: Any, field: ManyToManyField) -> None:
+        self.instance = instance
+        self.field = field
+
+    def _get_target_model(self) -> type[Model]:
+        return self.field._resolve_target()
+
+    def all(self) -> list[Any]:
+        """Fetch all related models linked through the junction table."""
+        target_cls = self._get_target_model()
+        db = self.instance.__class__._db
+        if db is None:
+            raise RuntimeError("Database not bound")
+
+        source_pk = self.instance.pk
+        if source_pk is None:
+            return []
+
+        junction = self.field.get_junction_table_name(self.instance.__class__)
+        source_col = f"{self.instance.__class__._meta.table_name}_id"
+        target_col = f"{target_cls._meta.table_name}_id"
+        target_table = target_cls._meta.table_name
+
+        placeholder = db.dialect.placeholder()
+        sql = (
+            f"SELECT t.* FROM {target_table} t "
+            f"INNER JOIN {junction} j ON t.{target_cls._meta.pk_field} = j.{target_col} "
+            f"WHERE j.{source_col} = {placeholder}"
+        )
+        rows = db.execute(sql, [source_pk], fetch="all")
+        if not rows:
+            return []
+        qs = target_cls.objects
+        return [qs._hydrate(row) for row in rows]
+
+    def add(self, *objs: Any) -> None:
+        """Link one or more related instances in the junction table."""
+        target_cls = self._get_target_model()
+        db = self.instance.__class__._db
+        if db is None:
+            raise RuntimeError("Database not bound")
+
+        source_pk = self.instance.pk
+        if source_pk is None:
+            raise FieldError("Cannot add relations to an unsaved instance.")
+
+        junction = self.field.get_junction_table_name(self.instance.__class__)
+        source_col = f"{self.instance.__class__._meta.table_name}_id"
+        target_col = f"{target_cls._meta.table_name}_id"
+        placeholder = db.dialect.placeholder()
+
+        # Ensure junction table exists
+        self.field.ensure_junction_table(db, self.instance.__class__)
+
+        for obj in objs:
+            target_pk = obj.pk if hasattr(obj, "pk") else obj
+            sql = f"INSERT INTO {junction} ({source_col}, {target_col}) VALUES ({placeholder}, {placeholder})"
+            try:
+                db.execute(sql, [source_pk, target_pk], fetch="none")
+            except Exception:
+                pass  # Ignore duplicate entries
+
+    def remove(self, *objs: Any) -> None:
+        """Remove links from the junction table."""
+        target_cls = self._get_target_model()
+        db = self.instance.__class__._db
+        if db is None:
+            return
+
+        source_pk = self.instance.pk
+        if source_pk is None:
+            return
+
+        junction = self.field.get_junction_table_name(self.instance.__class__)
+        source_col = f"{self.instance.__class__._meta.table_name}_id"
+        target_col = f"{target_cls._meta.table_name}_id"
+        placeholder = db.dialect.placeholder()
+
+        for obj in objs:
+            target_pk = obj.pk if hasattr(obj, "pk") else obj
+            sql = f"DELETE FROM {junction} WHERE {source_col} = {placeholder} AND {target_col} = {placeholder}"
+            db.execute(sql, [source_pk, target_pk], fetch="none")
+
+    def clear(self) -> None:
+        """Clear all relationships for this instance."""
+        db = self.instance.__class__._db
+        if db is None or self.instance.pk is None:
+            return
+
+        junction = self.field.get_junction_table_name(self.instance.__class__)
+        source_col = f"{self.instance.__class__._meta.table_name}_id"
+        placeholder = db.dialect.placeholder()
+        sql = f"DELETE FROM {junction} WHERE {source_col} = {placeholder}"
+        db.execute(sql, [self.instance.pk], fetch="none")
+
+
+class ManyToManyField(Field):
+    """
+    Defines a many-to-many relationship via an explicit or auto-managed junction table.
+    """
+
+    def __init__(
+        self,
+        to: type | str,
+        through: str | None = None,
+        related_name: str | None = None,
+        **kwargs: Any,
+    ) -> None:
+        super().__init__(**kwargs)
+        self.to: type | str = to
+        self.through: str | None = through
+        self.related_name: str | None = related_name
+
+    def db_type(self, dialect: str) -> str:
+        # ManyToManyField does not create a column on the host table
+        return ""
+
+    def get_junction_table_name(self, source_cls: type) -> str:
+        if self.through:
+            return self.through
+        target_cls = self._resolve_target()
+        names = sorted([source_cls._meta.table_name, target_cls._meta.table_name])
+        return f"{names[0]}_{names[1]}"
+
+    def ensure_junction_table(self, db: Any, source_cls: type) -> None:
+        target_cls = self._resolve_target()
+        junction = self.get_junction_table_name(source_cls)
+        source_col = f"{source_cls._meta.table_name}_id"
+        target_col = f"{target_cls._meta.table_name}_id"
+        sql = (
+            f"CREATE TABLE IF NOT EXISTS {junction} ("
+            f"{source_col} INTEGER NOT NULL, "
+            f"{target_col} INTEGER NOT NULL, "
+            f"PRIMARY KEY ({source_col}, {target_col})"
+            f")"
+        )
+        db.execute(sql, fetch="none")
+
+    def _resolve_target(self) -> type:
+        if isinstance(self.to, str):
+            from orm.models import ModelBase
+            target = ModelBase._registry.get(self.to)
+            if target is None:
+                raise FieldError(f"ManyToManyField references unknown model '{self.to}'")
+            return target
+        return self.to  # type: ignore[return-value]
+
+    def __get__(self, instance: Any, owner: type) -> Any:
+        if instance is None:
+            return self
+        return ManyRelatedManager(instance, self)
+
+    def __set__(self, instance: Any, value: Any) -> None:
+        raise FieldError("Cannot directly assign to ManyToManyField. Use .add() or .remove().")
+

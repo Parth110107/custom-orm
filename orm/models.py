@@ -34,11 +34,28 @@ import datetime
 from typing import TYPE_CHECKING, Any
 
 from orm.exceptions import DoesNotExist, FieldError, IntegrityError as OrmIntegrityError
-from orm.fields import Field, ForeignKeyField, IntegerField
+from orm.fields import Field, ForeignKeyField, IntegerField, ManyToManyField
 
 if TYPE_CHECKING:
     from orm.db import Database
     from orm.queryset import QuerySet
+
+
+class _ReverseForeignKeyDescriptor:
+    """
+    Descriptor installed on parent model allowing reverse relation queries,
+    e.g. author.post_set.all() or author.posts.all().
+    """
+
+    def __init__(self, child_model: type[Model], fk_field_name: str) -> None:
+        self.child_model = child_model
+        self.fk_field_name = fk_field_name
+
+    def __get__(self, instance: Any, owner: type) -> Any:
+        if instance is None:
+            return self
+        col = f"{self.fk_field_name}_id"
+        return self.child_model.objects.filter(**{col: instance.pk})
 
 
 # ---------------------------------------------------------------------------
@@ -83,6 +100,8 @@ class ModelMeta:
         self.column_to_field: dict[str, str] = {}
 
         for attr_name, field in fields.items():
+            if isinstance(field, ManyToManyField) or (hasattr(field, "db_type") and field.db_type("postgres") == ""):
+                continue
             col = field.column_name or attr_name
             self.column_order.append(col)
             self.column_to_field[col] = attr_name
@@ -148,6 +167,9 @@ class Manager:
 
     def first(self) -> Model | None:
         return self.__get__(None, self._model).first()
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self.__get__(None, self._model), name)
 
 
 # ---------------------------------------------------------------------------
@@ -286,11 +308,10 @@ class ModelBase(type):
         cls = super().__new__(mcs, name, bases, namespace)
 
         # Install descriptors on the new class.
-        # ForeignKeyField: install the field object itself (it is a descriptor).
+        # ForeignKeyField and ManyToManyField: install field object directly.
         # All other fields: wrap in _FieldDescriptor.
         for attr_name, field in all_fields.items():
-            if isinstance(field, ForeignKeyField):
-                # The field itself IS the descriptor
+            if isinstance(field, (ForeignKeyField, ManyToManyField)):
                 setattr(cls, attr_name, field)
             else:
                 descriptor = _FieldDescriptor(attr_name, field)
@@ -301,6 +322,20 @@ class ModelBase(type):
 
         # Register by class name for FK forward-reference resolution
         ModelBase._registry[name] = cls
+
+        # Wire reverse foreign key descriptors on target models
+        for attr_name, field in all_fields.items():
+            if isinstance(field, ForeignKeyField):
+                target_cls = None
+                if isinstance(field.to, str):
+                    target_cls = ModelBase._registry.get(field.to)
+                elif isinstance(field.to, type):
+                    target_cls = field.to
+
+                if target_cls and isinstance(target_cls, type):
+                    rel_name = field.related_name or f"{name.lower()}_set"
+                    if not hasattr(target_cls, rel_name):
+                        setattr(target_cls, rel_name, _ReverseForeignKeyDescriptor(cls, attr_name))
 
         return cls
 
